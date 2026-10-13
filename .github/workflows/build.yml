@@ -19,27 +19,35 @@ jobs:
       - name: Descargar repositorio
         uses: actions/checkout@v4
 
-      - name: Localizar el proyecto
+      - name: Descomprimir el proyecto
         shell: bash
         run: |
           set -e
 
-          BUILD_FILE=$(find . -type f -name 'build.gradle' \
-            -not -path './.git/*' \
-            -not -path '*/build/*' \
-            -print -quit)
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)
 
-          if [ -z "$BUILD_FILE" ]; then
-            echo "ERROR: No se encuentra ningún build.gradle en el repositorio."
-            echo "Archivos y carpetas disponibles:"
-            ls -la
-            find . -maxdepth 4 -type f | head -200
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No hay ningún ZIP en la raíz del repositorio."
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$BUILD_FILE")
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          mkdir -p extracted
+          unzip -oq "$ZIP_FILE" -d extracted
+
+          BUILD_FILE=$(find extracted -type f -name build.gradle -print -quit)
+
+          if [ -z "$BUILD_FILE" ]; then
+            echo "ERROR: El ZIP no contiene build.gradle."
+            find extracted -maxdepth 3 -type f | head -100
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$BUILD_FILE")"
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/${PROJECT_DIR#./}" >> "$GITHUB_ENV"
+
           echo "Proyecto encontrado en: $PROJECT_DIR"
+          test -d "$PROJECT_DIR/src/main/java"
+          test -f "$PROJECT_DIR/src/main/resources/META-INF/mods.toml"
 
       - name: Preparar Java
         uses: actions/setup-java@v4
@@ -51,56 +59,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.1.1'
-
-      - name: Preparar estructura del proyecto
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p src/main/java src/main/resources
-
-          while IFS= read -r -d '' file; do
-            package=$(grep -m1 '^package ' "$file" |
-              sed -E 's/^package ([^;]+);/\1/' |
-              tr '.' '/')
-
-            if [ -n "$package" ]; then
-              destination="src/main/java/$package"
-            else
-              destination="src/main/java"
-            fi
-
-            mkdir -p "$destination"
-            mv "$file" "$destination/"
-          done < <(find . -maxdepth 1 -type f -name '*.java' -print0)
-
-          for item in META-INF assets data; do
-            if [ -d "$item" ]; then
-              cp -an "$item/." src/main/resources/
-            fi
-          done
-
-          if [ -f mods.toml ]; then
-            mkdir -p src/main/resources/META-INF
-            cp -n mods.toml src/main/resources/META-INF/mods.toml
-          fi
-
-          if [ -f pack.mcmeta ]; then
-            cp -n pack.mcmeta src/main/resources/pack.mcmeta
-          fi
-
-          if ! find src/main/java -type f -name '*.java' -print -quit | grep -q .; then
-            echo "ERROR: No se han encontrado archivos Java."
-            exit 1
-          fi
-
-          if [ ! -f src/main/resources/META-INF/mods.toml ]; then
-            echo "ERROR: Falta META-INF/mods.toml."
-            exit 1
-          fi
-
-          echo "Estructura preparada correctamente."
 
       - name: Compilar el mod
         working-directory: ${{ env.PROJECT_DIR }}
@@ -123,19 +81,12 @@ jobs:
             exit 1
           fi
 
-          unzip -l "$JAR" | grep -q 'META-INF/mods.toml' || {
-            echo "ERROR: El JAR no contiene mods.toml."
-            exit 1
-          }
+          unzip -l "$JAR" | grep -q 'META-INF/mods.toml'
+          unzip -l "$JAR" | grep -q 'com/corazondemelon/CorazonDeMelon.class'
 
-          unzip -l "$JAR" | grep -q 'com/corazondemelon/CorazonDeMelon.class' || {
-            echo "ERROR: No se encuentra la clase principal."
-            exit 1
-          }
+          echo "JAR comprobado: $JAR"
 
-          echo "JAR generado correctamente: $JAR"
-
-      - name: Guardar el JAR
+      - name: Descargar el mod compilado
         uses: actions/upload-artifact@v4
         with:
           name: corazon-de-melon
